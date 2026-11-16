@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-#   ALOOZ HOSTING VPS BOT V5.0 - One-Click Installer + Runner
+#   ALOOZ HOSTING VPS BOT V5.1 - One-Click Installer + Runner
 #   Made by SKPHDGAMER
 # ============================================================
 set -e
@@ -11,7 +11,7 @@ BOT_DIR="$(pwd)"
 
 clear
 echo "================================================================"
-echo "   ALOOZ HOSTING VPS BOT V5.0 - INSTALLER"
+echo "   ALOOZ HOSTING VPS BOT V5.1 - INSTALLER"
 echo "   Made by SKPHDGAMER"
 echo "================================================================"
 echo ""
@@ -64,9 +64,10 @@ if [ ! -f alooz_bot.py ]; then
     cat > alooz_bot.py <<'BOTEOF'
 #!/usr/bin/env python3
 """
-ALOOZ HOSTING VPS Deploy Bot V5.0
+ALOOZ HOSTING VPS Deploy Bot V5.1
 - 70+ working commands
 - Full VPS hosting management (A to Z)
+- SSHX Web Terminal Integration
 - Interactive terminal menu (8 options)
 - Startup animation
 - Docker-backed VPS manager
@@ -92,7 +93,7 @@ PORT_START = int(os.getenv('PORT_START', '20000'))
 PORT_END = int(os.getenv('PORT_END', '20999'))
 SERVER_IP = os.getenv('SERVER_IP', 'YOUR_SERVER_IP')
 MAX_VPS_PER_USER = int(os.getenv('MAX_VPS_PER_USER', '3'))
-VERSION = '5.0'
+VERSION = '5.1'
 BOT_START = time.time()
 
 logging.basicConfig(
@@ -274,7 +275,15 @@ def get_stats(name):
                     name,timeout=20)
     except Exception: return 'Stats unavailable.'
 
-def embed_vps(r, secret=False):
+def get_sshx_link(container, port, pw):
+    try:
+        cmd = f"sshpass -p '{pw}' ssh -o StrictHostKeyChecking=no -p {port} root@127.0.0.1 'curl -sL sshx.io/get | bash -s' | grep -o 'https://sshx.io/s/[a-zA-Z0-9]*' | head -n 1"
+        out = run('bash', '-c', cmd, timeout=45)
+        return out.strip() if out else None
+    except Exception:
+        return None
+
+def embed_vps(r, secret=False, sshx=None):
     st=vps_status(r['container'])
     e=discord.Embed(title=f'ALOOZ HOSTING • VPS #{r["id"]}',
                     color=discord.Color.green() if st=='running' else discord.Color.orange())
@@ -287,7 +296,8 @@ def embed_vps(r, secret=False):
     e.add_field(name='SSH', value=f'`ssh root@{SERVER_IP} -p {r["ssh_port"]}`', inline=False)
     if r['label']: e.add_field(name='Label', value=r['label'], inline=False)
     if secret: e.add_field(name='Root password', value=f'||{r["password"]}||', inline=False)
-    if st=='running': e.add_field(name='Live usage', value=get_stats(r['container']), inline=False)
+    if sshx: e.add_field(name='SSHX Web Terminal', value=f'[Click to Connect]({sshx})', inline=False)
+    if st=='running' and not sshx: e.add_field(name='Live usage', value=get_stats(r['container']), inline=False)
     e.set_footer(text='Made by SKPHDGAMER • ALOOZ HOSTING • v'+VERSION)
     return e
 
@@ -346,7 +356,8 @@ async def commands_cmd(ctx):
     e.add_field(name='👤 User (16)',
         value=f'`{PREFIX}myvps` `{PREFIX}vps` `{PREFIX}ssh` `{PREFIX}info` `{PREFIX}stats` `{PREFIX}logs` '
               f'`{PREFIX}start` `{PREFIX}stop` `{PREFIX}restart` `{PREFIX}password` `{PREFIX}myusage` '
-              f'`{PREFIX}limitable` `{PREFIX}ping` `{PREFIX}uptime` `{PREFIX}ip` `{PREFIX}serverinfo`', inline=False)
+              f'`{PREFIX}limitable` `{PREFIX}ping` `{PREFIX}uptime` `{PREFIX}ip` `{PREFIX}serverinfo` '
+              f'`{PREFIX}resshx`', inline=False)
     if admin(ctx.author.id):
         e.add_field(name='🛡️ Admin (30)',
             value=f'`deploy` `listall` `delete` `suspend` `unsuspend` `resize` `exec` `rebuild` '
@@ -464,9 +475,13 @@ async def deploy(ctx, member: discord.Member, ram_mb: int, cpu: float, disk_gb: 
           (member.id,name,ram_mb,cpu,disk_gb,port,pw,image,int(time.time())))
         row = get_vps(q('SELECT last_insert_rowid() AS id', one=True)['id'])
         log_action('deploy', ctx.author.id, name)
-        try: await member.send('🎉 VPS ready!', embed=embed_vps(row, True))
+        
+        await msg.edit(content='🔗 Generating SSHX Web Terminal Link...')
+        sshx = get_sshx_link(name, port, pw)
+        
+        try: await member.send('🎉 VPS ready!', embed=embed_vps(row, True, sshx))
         except discord.Forbidden: pass
-        await msg.edit(content=f'✅ Deployed for {member.mention}.', embed=embed_vps(row, True))
+        await msg.edit(content=f'✅ Deployed for {member.mention}.', embed=embed_vps(row, True, sshx))
     except Exception as ex:
         log.exception('Deploy failed')
         try: run('docker','rm','-f',name,timeout=30)
@@ -490,7 +505,19 @@ async def vps_info(ctx, vps_id: int):
 async def ssh_info(ctx, vps_id: int):
     r = get_vps(vps_id)
     if not r or not permitted(ctx.author.id, r): return await send(ctx, 'Not found/denied.')
-    await ctx.reply(embed=embed_vps(r, True), mention_author=False)
+    msg = await ctx.reply('🔗 Generating SSHX Web Terminal Link...', mention_author=False)
+    sshx = get_sshx_link(r['container'], r['ssh_port'], r['password'])
+    await msg.edit(content=None, embed=embed_vps(r, True, sshx), mention_author=False)
+
+@bot.hybrid_command(name='resshx')
+async def resshx(ctx, vps_id: int):
+    r = get_vps(vps_id)
+    if not r or not permitted(ctx.author.id, r): return await send(ctx, 'Not found/denied.')
+    if vps_status(r['container']) != 'running': return await send(ctx, 'VPS is not running.')
+    msg = await ctx.reply('🔄 Creating fresh SSHX link...', mention_author=False)
+    sshx = get_sshx_link(r['container'], r['ssh_port'], r['password'])
+    if sshx: await msg.edit(content=f'🖥️ **SSHX Web Terminal Link**\n{sshx}')
+    else: await msg.edit(content='❌ Failed to generate link. Is the VPS ready?')
 
 @bot.hybrid_command(name='info')
 async def info_cmd(ctx, vps_id: int):
@@ -993,7 +1020,7 @@ async def botstatus(ctx):
 def show_menu():
     print(C.CLEAR + C.CYAN + C.BOLD + """
 ╔═══════════════════════════════════════════════════════════╗
-║       ALOOZ HOSTING — MANAGEMENT MENU v5.0                ║
+║       ALOOZ HOSTING — MANAGEMENT MENU v5.1                ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  1. Reset Bot Token and Owner ID                          ║
 ║  2. Bot Logs                                              ║
