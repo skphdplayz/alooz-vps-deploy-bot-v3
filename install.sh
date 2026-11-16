@@ -5,8 +5,9 @@
 # ============================================================
 set -e
 
-BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$BOT_DIR"
+# Create a clean directory if run via curl
+mkdir -p alooz-bot && cd alooz-bot
+BOT_DIR="$(pwd)"
 
 clear
 echo "================================================================"
