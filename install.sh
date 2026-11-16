@@ -21,6 +21,12 @@ if ! command -v python3 &>/dev/null; then
     echo "[*] Installing Python 3..."
     sudo apt-get update -qq
     sudo apt-get install -y python3 python3-pip python3-venv
+else
+    if ! dpkg -s python3-venv &>/dev/null; then
+        echo "[*] Installing python3-venv..."
+        sudo apt-get update -qq
+        sudo apt-get install -y python3-venv
+    fi
 fi
 
 # ---------- 2. Docker ----------
@@ -45,6 +51,9 @@ REQEOF
 fi
 
 # ---------- 4. Python packages ----------
+echo "[*] Creating virtual environment..."
+python3 -m venv venv
+source venv/bin/activate
 echo "[*] Installing Python packages..."
 python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
@@ -1144,4 +1153,5 @@ echo ""
 echo "================================================================"
 echo "   STARTING BOT"
 echo "================================================================"
+source venv/bin/activate
 python3 alooz_bot.py
