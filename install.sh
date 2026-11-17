@@ -275,14 +275,94 @@ def get_stats(name):
                     name,timeout=20)
     except Exception: return 'Stats unavailable.'
 
-def get_sshx_link(port, pw):
+# ==================== SSHX SYSTEM (rewritten) ====================
+# How it works:
+#  - We run a helper script INSIDE the VPS container using `docker exec` (no SSH / sshpass needed).
+#  - sshx is installed once, started in the BACKGROUND (so it never blocks), and its output
+#    is saved to /root/.sshx.log. We read the full link (including the #key part) from there.
+#  - /sshx  -> returns the existing live link (or creates one if none is running)
+#  - /resshx -> kills the old session and creates a brand new link
+SSHX_RE = re.compile(r'https://sshx\.io/s/[A-Za-z0-9_-]+(?:#[A-Za-z0-9_-]+)?')
+
+SSHX_SCRIPT = r'''
+LOG=/root/.sshx.log
+FRESH="$1"
+
+sshx_pids() {
+  for d in /proc/[0-9]*; do
+    if [ "$(cat "$d/comm" 2>/dev/null)" = "sshx" ]; then echo "${d#/proc/}"; fi
+  done
+}
+read_link() {
+  [ -s "$LOG" ] || return 1
+  sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$LOG" | grep -oE 'https://sshx\.io/s/[A-Za-z0-9_-]+(#[A-Za-z0-9_-]+)?' | head -n 1
+}
+
+# Reuse a live session unless a fresh one was requested
+if [ "$FRESH" != "1" ] && [ -n "$(sshx_pids)" ]; then
+  L="$(read_link)"
+  if [ -n "$L" ]; then echo "$L"; exit 0; fi
+fi
+
+# Stop old sessions
+for p in $(sshx_pids); do kill "$p" 2>/dev/null || true; done
+sleep 1
+
+# Wait until the VPS finished its first-boot setup (curl installed)
+for i in $(seq 1 90); do
+  command -v curl >/dev/null 2>&1 && break
+  sleep 2
+done
+command -v curl >/dev/null 2>&1 || { echo "ERR: VPS is still setting up, try again in a minute."; exit 1; }
+
+# Install sshx if missing
+if ! command -v sshx >/dev/null 2>&1; then
+  ARCH="$(uname -m)"
+  case "$ARCH" in
+    x86_64) T=x86_64-unknown-linux-musl ;;
+    aarch64|arm64) T=aarch64-unknown-linux-musl ;;
+    *) echo "ERR: unsupported CPU architecture $ARCH"; exit 1 ;;
+  esac
+  cd /tmp
+  if curl -fsSL "https://s3.amazonaws.com/sshx/sshx-$T.tar.gz" -o sshx.tgz && tar xzf sshx.tgz sshx 2>/dev/null; then
+    install -m 755 sshx /usr/local/bin/sshx
+  else
+    curl -fsSL https://sshx.io/get | sh >/dev/null 2>&1 || true
+    [ -x "$HOME/.sshx/bin/sshx" ] && ln -sf "$HOME/.sshx/bin/sshx" /usr/local/bin/sshx
+  fi
+  rm -f /tmp/sshx.tgz /tmp/sshx
+fi
+command -v sshx >/dev/null 2>&1 || { echo "ERR: could not install sshx (VPS has no internet?)."; exit 1; }
+
+# Start in the background (survives after this command ends)
+rm -f "$LOG"
+nohup setsid sshx </dev/null >"$LOG" 2>&1 &
+
+for i in $(seq 1 40); do
+  L="$(read_link)"
+  if [ -n "$L" ]; then echo "$L"; exit 0; fi
+  sleep 1
+done
+echo "ERR: sshx did not return a link."
+exit 1
+'''
+
+def _sshx_sync(container, fresh):
+    out = run('docker', 'exec', container, 'bash', '-c', SSHX_SCRIPT, 'sshx', '1' if fresh else '0', timeout=240)
+    m = SSHX_RE.search(out)
+    if not m: raise RuntimeError(out.strip() or 'No SSHX link returned.')
+    return m.group(0)
+
+async def get_sshx_link(container, fresh=False):
+    """Returns the SSHX link, or raises RuntimeError with a readable reason."""
     try:
-        cmd = f"sshpass -p '{pw}' ssh -o StrictHostKeyChecking=no -p {port} root@127.0.0.1 'curl -sL sshx.io/get | bash -s' | grep -o 'https://sshx.io/s/[a-zA-Z0-9]*' | head -n 1"
-        out = run('bash', '-c', cmd, timeout=45)
-        return out.strip() if out else None
+        return await asyncio.to_thread(_sshx_sync, container, fresh)
+    except RuntimeError as e:
+        log.error('SSHX error: %s', e)
+        raise RuntimeError(str(e).replace('ERR: ', '')[:300])
     except Exception as e:
-        log.error(f"SSHX error: {e}")
-        return None
+        log.error('SSHX error: %s', e)
+        raise RuntimeError('SSHX failed. Check bot.log.')
 
 def embed_vps(r, secret=False, sshx=None):
     st=vps_status(r['container'])
@@ -355,7 +435,7 @@ async def status_loop():
 async def commands_cmd(ctx):
     e = discord.Embed(title='ALOOZ HOSTING • Commands (70+)', color=discord.Color.blurple())
     e.add_field(name='👤 User (17)',
-        value=f'`{PREFIX}myvps` `{PREFIX}vps` `{PREFIX}ssh` `{PREFIX}resshx` `{PREFIX}info` `{PREFIX}stats` `{PREFIX}logs` '
+        value=f'`{PREFIX}myvps` `{PREFIX}vps` `{PREFIX}ssh` `{PREFIX}sshx` `{PREFIX}resshx` `{PREFIX}info` `{PREFIX}stats` `{PREFIX}logs` '
               f'`{PREFIX}start` `{PREFIX}stop` `{PREFIX}restart` `{PREFIX}password` `{PREFIX}myusage` '
               f'`{PREFIX}limitable` `{PREFIX}ping` `{PREFIX}uptime` `{PREFIX}ip` `{PREFIX}serverinfo`', inline=False)
     if admin(ctx.author.id):
@@ -477,8 +557,9 @@ async def deploy(ctx, member: discord.Member, ram_mb: int, cpu: float, disk_gb: 
         log_action('deploy', ctx.author.id, name)
         
         await msg.edit(content='🔗 Generating SSHX Web Terminal Link...')
-        sshx = get_sshx_link(port, pw)
-        
+        try: sshx = await get_sshx_link(name, fresh=True)
+        except Exception: sshx = None
+
         try: await member.send('🎉 VPS ready!', embed=embed_vps(row, True, sshx))
         except discord.Forbidden: pass
         await msg.edit(content=f'✅ Deployed for {member.mention}.', embed=embed_vps(row, True, sshx))
@@ -501,23 +582,59 @@ async def vps_info(ctx, vps_id: int):
     if not r or not permitted(ctx.author.id, r): return await send(ctx, 'Not found/denied.')
     await ctx.reply(embed=embed_vps(r), mention_author=False)
 
+def resolve_vps(ctx, vps_id):
+    """vps_id optional: if the user owns exactly one VPS it is picked automatically."""
+    if vps_id is None:
+        rows = q('SELECT * FROM vps WHERE owner_id=?', (ctx.author.id,))
+        if len(rows) == 1: return rows[0], None
+        if not rows: return None, 'You have no VPS. Give a VPS id, e.g. `sshx 1`.'
+        return None, 'You have several VPS. Use the id: `' + PREFIX + 'sshx <vps_id>`'
+    r = get_vps(vps_id)
+    if not r or not permitted(ctx.author.id, r): return None, 'Not found/denied.'
+    return r, None
+
+async def sshx_flow(ctx, vps_id, fresh):
+    r, err = resolve_vps(ctx, vps_id)
+    if err: return await send(ctx, err)
+    if r['suspended'] and not admin(ctx.author.id): return await send(ctx, 'VPS suspended.')
+    if vps_status(r['container']) != 'running': return await send(ctx, 'VPS is not running. Start it first.')
+    # Slash commands: reply is private (ephemeral). Prefix commands: link goes to DM.
+    msg = await ctx.reply('🔄 Creating a fresh SSHX link...' if fresh else '🔗 Getting SSHX link...',
+                          mention_author=False, ephemeral=True)
+    try:
+        link = await get_sshx_link(r['container'], fresh=fresh)
+    except Exception as ex:
+        return await msg.edit(content=f'❌ {ex}')
+    log_action('resshx' if fresh else 'sshx', ctx.author.id, r['container'])
+    text = f'🖥️ **SSHX Web Terminal • VPS #{r["id"]}**\n{link}\n⚠️ Anyone with this link has full access to the VPS. Do not share it.'
+    if ctx.interaction is not None:
+        return await msg.edit(content=text)
+    try:
+        await ctx.author.send(text)
+        await msg.edit(content=f'✅ SSHX link for VPS #{r["id"]} sent to your DM.')
+    except discord.Forbidden:
+        await msg.edit(content=text + '\n(Enable DMs from server members to receive links privately.)')
+
+@bot.hybrid_command(name='sshx')
+@app_commands.describe(vps_id='VPS id (optional if you have only one)')
+async def sshx_cmd(ctx, vps_id: Optional[int] = None):
+    await sshx_flow(ctx, vps_id, fresh=False)
+
+@bot.hybrid_command(name='resshx')
+@app_commands.describe(vps_id='VPS id (optional if you have only one)')
+async def resshx(ctx, vps_id: Optional[int] = None):
+    await sshx_flow(ctx, vps_id, fresh=True)
+
 @bot.hybrid_command(name='ssh')
 async def ssh_info(ctx, vps_id: int):
     r = get_vps(vps_id)
     if not r or not permitted(ctx.author.id, r): return await send(ctx, 'Not found/denied.')
-    msg = await ctx.reply('🔗 Generating SSHX Web Terminal Link...', mention_author=False)
-    sshx = get_sshx_link(r['ssh_port'], r['password'])
-    await msg.edit(content=None, embed=embed_vps(r, True, sshx), mention_author=False)
-
-@bot.hybrid_command(name='resshx')
-async def resshx(ctx, vps_id: int):
-    r = get_vps(vps_id)
-    if not r or not permitted(ctx.author.id, r): return await send(ctx, 'Not found/denied.')
-    if vps_status(r['container']) != 'running': return await send(ctx, 'VPS is not running.')
-    msg = await ctx.reply('🔄 Creating fresh SSHX link...', mention_author=False)
-    sshx = get_sshx_link(r['ssh_port'], r['password'])
-    if sshx: await msg.edit(content=f'🖥️ **SSHX Web Terminal Link**\n{sshx}')
-    else: await msg.edit(content='❌ Failed to generate link. Is the VPS ready?')
+    msg = await ctx.reply('🔗 Getting SSHX Web Terminal Link...', mention_author=False)
+    sshx = None
+    if vps_status(r['container']) == 'running':
+        try: sshx = await get_sshx_link(r['container'], fresh=False)
+        except Exception: sshx = None
+    await msg.edit(content=None, embed=embed_vps(r, True, sshx))
 
 @bot.hybrid_command(name='info')
 async def info_cmd(ctx, vps_id: int):
