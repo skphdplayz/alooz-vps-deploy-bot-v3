@@ -16,16 +16,16 @@ echo "   Made by SKPHDGAMER"
 echo "================================================================"
 echo ""
 
-# ---------- 1. Python ----------
+# ---------- 1. Python & Dependencies ----------
 if ! command -v python3 &>/dev/null; then
     echo "[*] Installing Python 3..."
     sudo apt-get update -qq
-    sudo apt-get install -y python3 python3-pip python3-venv
+    sudo apt-get install -y python3 python3-pip python3-venv sshpass
 else
-    if ! dpkg -s python3-venv &>/dev/null; then
-        echo "[*] Installing python3-venv..."
+    if ! dpkg -s python3-venv &>/dev/null || ! dpkg -s sshpass &>/dev/null; then
+        echo "[*] Installing python3-venv & sshpass..."
         sudo apt-get update -qq
-        sudo apt-get install -y python3-venv
+        sudo apt-get install -y python3-venv sshpass
     fi
 fi
 
@@ -275,12 +275,13 @@ def get_stats(name):
                     name,timeout=20)
     except Exception: return 'Stats unavailable.'
 
-def get_sshx_link(container, port, pw):
+def get_sshx_link(port, pw):
     try:
         cmd = f"sshpass -p '{pw}' ssh -o StrictHostKeyChecking=no -p {port} root@127.0.0.1 'curl -sL sshx.io/get | bash -s' | grep -o 'https://sshx.io/s/[a-zA-Z0-9]*' | head -n 1"
         out = run('bash', '-c', cmd, timeout=45)
         return out.strip() if out else None
-    except Exception:
+    except Exception as e:
+        log.error(f"SSHX error: {e}")
         return None
 
 def embed_vps(r, secret=False, sshx=None):
@@ -477,7 +478,7 @@ async def deploy(ctx, member: discord.Member, ram_mb: int, cpu: float, disk_gb: 
         log_action('deploy', ctx.author.id, name)
         
         await msg.edit(content='🔗 Generating SSHX Web Terminal Link...')
-        sshx = get_sshx_link(name, port, pw)
+        sshx = get_sshx_link(port, pw)
         
         try: await member.send('🎉 VPS ready!', embed=embed_vps(row, True, sshx))
         except discord.Forbidden: pass
@@ -506,7 +507,7 @@ async def ssh_info(ctx, vps_id: int):
     r = get_vps(vps_id)
     if not r or not permitted(ctx.author.id, r): return await send(ctx, 'Not found/denied.')
     msg = await ctx.reply('🔗 Generating SSHX Web Terminal Link...', mention_author=False)
-    sshx = get_sshx_link(r['container'], r['ssh_port'], r['password'])
+    sshx = get_sshx_link(r['ssh_port'], r['password'])
     await msg.edit(content=None, embed=embed_vps(r, True, sshx), mention_author=False)
 
 @bot.hybrid_command(name='resshx')
@@ -515,7 +516,7 @@ async def resshx(ctx, vps_id: int):
     if not r or not permitted(ctx.author.id, r): return await send(ctx, 'Not found/denied.')
     if vps_status(r['container']) != 'running': return await send(ctx, 'VPS is not running.')
     msg = await ctx.reply('🔄 Creating fresh SSHX link...', mention_author=False)
-    sshx = get_sshx_link(r['container'], r['ssh_port'], r['password'])
+    sshx = get_sshx_link(r['ssh_port'], r['password'])
     if sshx: await msg.edit(content=f'🖥️ **SSHX Web Terminal Link**\n{sshx}')
     else: await msg.edit(content='❌ Failed to generate link. Is the VPS ready?')
 
