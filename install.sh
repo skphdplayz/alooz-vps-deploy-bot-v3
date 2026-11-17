@@ -354,11 +354,10 @@ async def status_loop():
 @bot.hybrid_command(name='commands', aliases=['help'])
 async def commands_cmd(ctx):
     e = discord.Embed(title='ALOOZ HOSTING • Commands (70+)', color=discord.Color.blurple())
-    e.add_field(name='👤 User (16)',
-        value=f'`{PREFIX}myvps` `{PREFIX}vps` `{PREFIX}ssh` `{PREFIX}info` `{PREFIX}stats` `{PREFIX}logs` '
+    e.add_field(name='👤 User (17)',
+        value=f'`{PREFIX}myvps` `{PREFIX}vps` `{PREFIX}ssh` `{PREFIX}resshx` `{PREFIX}info` `{PREFIX}stats` `{PREFIX}logs` '
               f'`{PREFIX}start` `{PREFIX}stop` `{PREFIX}restart` `{PREFIX}password` `{PREFIX}myusage` '
-              f'`{PREFIX}limitable` `{PREFIX}ping` `{PREFIX}uptime` `{PREFIX}ip` `{PREFIX}serverinfo` '
-              f'`{PREFIX}resshx`', inline=False)
+              f'`{PREFIX}limitable` `{PREFIX}ping` `{PREFIX}uptime` `{PREFIX}ip` `{PREFIX}serverinfo`', inline=False)
     if admin(ctx.author.id):
         e.add_field(name='🛡️ Admin (30)',
             value=f'`deploy` `listall` `delete` `suspend` `unsuspend` `resize` `exec` `rebuild` '
