@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-#   ALOOZ HOSTING VPS BOT V5.1 - One-Click Installer + Runner
+#   ALOOZ HOSTING VPS BOT V5.2 - One-Click Installer + Runner
 #   Made by SKPHDGAMER
 # ============================================================
 set -e
@@ -11,7 +11,7 @@ BOT_DIR="$(pwd)"
 
 clear
 echo "================================================================"
-echo "   ALOOZ HOSTING VPS BOT V5.1 - INSTALLER"
+echo "   ALOOZ HOSTING VPS BOT V5.2 - INSTALLER"
 echo "   Made by SKPHDGAMER"
 echo "================================================================"
 echo ""
@@ -59,12 +59,16 @@ python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
 
 # ---------- 5. Bot code ----------
-if [ ! -f alooz_bot.py ]; then
-    echo "[*] Creating alooz_bot.py..."
+# Always write the latest bot code (old file is kept as a backup)
+if [ -f alooz_bot.py ]; then
+    cp alooz_bot.py "alooz_bot.py.bak.$(date +%s)"
+fi
+if true; then
+    echo "[*] Writing latest alooz_bot.py..."
     cat > alooz_bot.py <<'BOTEOF'
 #!/usr/bin/env python3
 """
-ALOOZ HOSTING VPS Deploy Bot V5.1
+ALOOZ HOSTING VPS Deploy Bot V5.2
 - 70+ working commands
 - Full VPS hosting management (A to Z)
 - SSHX Web Terminal Integration
@@ -93,7 +97,7 @@ PORT_START = int(os.getenv('PORT_START', '20000'))
 PORT_END = int(os.getenv('PORT_END', '20999'))
 SERVER_IP = os.getenv('SERVER_IP', 'YOUR_SERVER_IP')
 MAX_VPS_PER_USER = int(os.getenv('MAX_VPS_PER_USER', '3'))
-VERSION = '5.1'
+VERSION = '5.2'
 BOT_START = time.time()
 
 logging.basicConfig(
@@ -1137,7 +1141,7 @@ async def botstatus(ctx):
 def show_menu():
     print(C.CLEAR + C.CYAN + C.BOLD + """
 ╔═══════════════════════════════════════════════════════════╗
-║       ALOOZ HOSTING — MANAGEMENT MENU v5.1                ║
+║       ALOOZ HOSTING — MANAGEMENT MENU v5.2                ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  1. Reset Bot Token and Owner ID                          ║
 ║  2. Bot Logs                                              ║
@@ -1147,6 +1151,7 @@ def show_menu():
 ║  6. Uninstall Bot                                         ║
 ║  7. Reinstall Bot                                         ║
 ║  8. Exit                                                  ║
+║  9. Delete Full System (DANGER)                           ║
 ╚═══════════════════════════════════════════════════════════╝""" + C.RESET)
 
 def menu_reset_credentials():
@@ -1232,6 +1237,48 @@ def menu_reinstall():
         print(C.GREEN + "✅ Deps reinstalled. Restart bot manually." + C.RESET)
     except Exception as ex: print(C.RED + f"❌ {ex}" + C.RESET)
 
+def menu_delete_full_system():
+    print(C.RED + C.BOLD + "\n── DELETE FULL SYSTEM ──" + C.RESET)
+    print(C.RED + "This will PERMANENTLY delete:")
+    print("  • ALL VPS / Docker containers created by this bot")
+    print("  • ALL snapshot images")
+    print("  • The database, logs, backups, .env (token), venv")
+    print(f"  • The whole bot folder: {BASE}" + C.RESET)
+    if input(C.YELLOW + "Type DELETE-EVERYTHING to continue: " + C.RESET).strip() != 'DELETE-EVERYTHING':
+        print(C.YELLOW + "Cancelled." + C.RESET); return False
+    try:
+        print("[*] Stopping the bot...")
+        try:
+            fut = asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
+            fut.result(timeout=10)
+        except Exception: pass
+        print("[*] Removing VPS containers...")
+        try:
+            ids = run('docker','ps','-aq','--filter','label=alooz.vps=1',timeout=30).split()
+            for cid in ids:
+                try: run('docker','rm','-f',cid,timeout=60)
+                except Exception as ex: print(C.RED + f"   ❌ {cid}: {ex}" + C.RESET)
+            print(f"    removed {len(ids)} container(s)")
+        except Exception as ex: print(C.RED + f"   ❌ Docker: {ex}" + C.RESET)
+        print("[*] Removing snapshot images...")
+        try:
+            imgs = [i for i in run('docker','images','--format','{{.Repository}}:{{.Tag}}',timeout=30).split()
+                    if i.startswith('alooz-snap-')]
+            for i in imgs:
+                try: run('docker','rmi','-f',i,timeout=60)
+                except Exception: pass
+            print(f"    removed {len(imgs)} image(s)")
+        except Exception: pass
+        print("[*] Deleting bot folder...")
+        try: conn.close()
+        except Exception: pass
+        os.chdir(BASE.parent)
+        shutil.rmtree(BASE, ignore_errors=True)
+        print(C.GREEN + "✅ Full system deleted. Run the install command again to reinstall." + C.RESET)
+        return True
+    except Exception as ex:
+        print(C.RED + f"❌ {ex}" + C.RESET); return False
+
 # ==================== MAIN ====================
 def main():
     play_startup_animation()
@@ -1242,7 +1289,7 @@ def main():
     time.sleep(3)
     while True:
         show_menu()
-        ch = input(C.GREEN + "\nChoose [1-8]: " + C.RESET).strip()
+        ch = input(C.GREEN + "\nChoose [1-9]: " + C.RESET).strip()
         if ch == '1': menu_reset_credentials()
         elif ch == '2': menu_show_logs()
         elif ch == '3': menu_update_bot()
@@ -1254,6 +1301,8 @@ def main():
         elif ch == '7': menu_reinstall()
         elif ch == '8':
             print(C.YELLOW + "Bye!" + C.RESET); break
+        elif ch == '9':
+            if menu_delete_full_system(): os._exit(0)
         else: print(C.RED + "Invalid." + C.RESET)
         input(C.YELLOW + "\n[Enter]" + C.RESET)
 
@@ -1262,9 +1311,7 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print(C.YELLOW + "\nInterrupted." + C.RESET)
 BOTEOF
-    echo "[✓] alooz_bot.py created."
-else
-    echo "[✓] alooz_bot.py exists."
+    echo "[✓] alooz_bot.py updated."
 fi
 
 # ---------- 6. .env ----------
